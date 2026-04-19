@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Math Invaders</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body {
+  background:#000;
+  display:flex;
+  justify-content:center;
+  align-items:center;
+  height:100vh;
+  overflow:hidden;
+  font-family: monospace;
+  touch-action:none;
+  user-select:none;
+}
+#wrap { position:relative; display:inline-block; }
+canvas { display:block; }
+#ui {
+  position:absolute;
+  top:0; left:0; right:0; bottom:0;
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  background:rgba(0,0,0,0.88);
+  z-index:5;
+}
+#ui.hide { display:none; }
+.title {
+  color:#0ff;
+  font-size:26px;
+  font-weight:bold;
+  text-align:center;
+  margin-bottom:14px;
+  letter-spacing:2px;
+  text-shadow:0 0 14px #0ff;
+  line-height:1.6;
+}
+.sub {
+  color:#0f0;
+  font-size:13px;
+  text-align:center;
+  line-height:2.2;
+  margin-bottom:22px;
+  direction:rtl;
+}
+.btn {
+  background:#0ff;
+  color:#000;
+  border:none;
+  padding:14px 36px;
+  font-size:16px;
+  font-weight:bold;
+  cursor:pointer;
+  font-family:monospace;
+  letter-spacing:2px;
+}
+.btn:hover, .btn:active { background:#fff; }
+#scoreMsg {
+  color:#ff0;
+  font-size:16px;
+  font-weight:bold;
+  margin-bottom:14px;
+  text-shadow:0 0 8px #ff0;
+  min-height:22px;
+}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c"></canvas>
+  <div id="ui">
+    <div class="title" id="uiTitle">★ MATH INVADERS ★<br><span style="font-size:16px;color:#ff0">לוח הכפל</span></div>
+    <div class="sub" id="uiSub">
+      חצים ← → להזזה &nbsp;|&nbsp; SPACE לירי<br>
+      גרור באצבע לנייד &nbsp;|&nbsp; לחץ לירי<br>
+      ─────────────────────<br>
+      פגע בחייזר עם התשובה הנכונה ✓<br>
+      תשובה שגויה = אבדן לב ♥
+    </div>
+    <div id="scoreMsg"></div>
+    <button class="btn" id="startBtn">▶ התחל</button>
+  </div>
+</div>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+const ui     = document.getElementById('ui');
+const startBtn  = document.getElementById('startBtn');
+const uiTitle   = document.getElementById('uiTitle');
+const uiSub     = document.getElementById('uiSub');
+const scoreMsg  = document.getElementById('scoreMsg');
+
+// ── Sizing ────────────────────────────────────────────────
+let W=400, H=560, SC=1;
+function resize() {
+  SC = Math.min(window.innerWidth/400, window.innerHeight/560, 1.4);
+  W  = Math.round(400*SC);
+  H  = Math.round(560*SC);
+  canvas.width=W; canvas.height=H;
+  canvas.style.width=W+'px'; canvas.style.height=H+'px';
+}
+resize();
+window.addEventListener('resize', resize);
+
+function s(n){ return Math.round(n*SC); }
+function rnd(a,b){ return Math.floor(Math.random()*(b-a+1))+a; }
+function shuffle(a){ for(let i=a.length-1;i>0;i--){const j=rnd(0,i);[a[i],a[j]]=[a[j],a[i]];}return a; }
+
+// ── Audio ─────────────────────────────────────────────────
+let AC=null;
+function ensureAC(){ if(!AC) AC=new(window.AudioContext||window.webkitAudioContext)(); if(AC.state==='suspended') AC.resume(); return AC; }
+function beep(freq,dur,type,vol){
+  try{
+    const ac=ensureAC(),o=ac.createOscillator(),g=ac.createGain();
+    o.connect(g);g.connect(ac.destination);
+    o.type=type||'square'; o.frequency.value=freq;
+    g.gain.setValueAtTime(vol||0.15,ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+dur);
+    o.start();o.stop(ac.currentTime+dur);
+  }catch(e){}
+}
+function sndShoot(){ beep(700,0.07,'square',0.1); }
+function sndCorrect(){ [523,659,784].forEach((f,i)=>setTimeout(()=>beep(f,0.15,'square',0.18),i*90)); }
+function sndWrong(){ beep(110,0.3,'sawtooth',0.2); }
+function sndLevelUp(){ [392,523,659,784].forEach((f,i)=>setTimeout(()=>beep(f,0.18,'square',0.2),i*110)); }
+function sndExplode(){
+  try{
+    const ac=ensureAC(),buf=ac.createBuffer(1,ac.sampleRate*0.25,ac.sampleRate);
+    const d=buf.getChannelData(0);
+    for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*(1-i/d.length);
+    const src=ac.createBufferSource(),g=ac.createGain();
+    src.buffer=buf;src.connect(g);g.connect(ac.destination);
+    g.gain.setValueAtTime(0.25,ac.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001,ac.currentTime+0.25);
+    src.start();
+  }catch(e){}
+}
+
+// ── Game state ────────────────────────────────────────────
+let running=false;
+let score,lives,level;
+let player,bullets,aBullets,aliens,shields,particles;
+let aDir,aSpeed,question,correctAns;
+let lastShot=0,lastAShot=0,aShotDelay;
+let wrongFlash=0,okFlash=0,lvlFlash=0,lvlPause=0;
+let touchX=0;
+const keys={left:false,right:false};
+
+// ── Question helpers ──────────────────────────────────────
+function makeQuestion(){
+  const max = level<=2?5 : level<=4?7 : level<=6?9 : 12;
+  const a=rnd(2,max), b=rnd(2,max);
+  question={a,b}; correctAns=a*b;
+}
+function alienNums(correct,count){
+  // Build filler numbers (no correct answer yet)
+  const set=new Set();
+  const cands=[correct-1,correct+1,correct+2,correct-2,correct+3,correct-3,
+    correct*2,Math.ceil(correct*1.5),correct+7,correct-7,correct+5,correct+10,correct-5,correct+4];
+  for(const n of cands){ if(n>1&&n!==correct) set.add(n); if(set.size>=count-1) break; }
+  while(set.size<count-1){ const n=rnd(2,100); if(n!==correct) set.add(n); }
+  const others=shuffle([...set]).slice(0,count-1);
+  // Always insert correct answer in LAST row (closest to player)
+  const COLS=8;
+  const lastRowStart=Math.max(0, count-1-COLS+1);
+  const slot=rnd(lastRowStart, count-1);
+  others.splice(slot, 0, correct);
+  return others;
+}
+
+// ── Build objects ─────────────────────────────────────────
+function buildAliens(){
+  aliens=[];
+  const COLS=8,ROWS=3,total=COLS*ROWS;
+  const nums=alienNums(correctAns,total);
+  const aw=s(32),ah=s(20);
+  const marginX=s(22);
+  const gapX=(W-marginX*2-aw)/(COLS-1);
+  const startY=s(72);
+  const gapY=s(52);
+  let idx=0;
+  for(let r=0;r<ROWS;r++) for(let c=0;c<COLS;c++){
+    aliens.push({x:marginX+c*gapX+aw/2, y:startY+r*gapY, w:aw, h:ah,
+      alive:true, type:r%3, num:nums[idx++], flash:0});
+  }
+  aDir=1;
+  aSpeed=s(0.3+level*0.1);
+}
+
+function buildShields(){
+  shields=[];
+  const positions=[0.14,0.38,0.62,0.86];
+  const sw=s(44),sh2=s(28),pw=s(4),ph=s(4);
+  const sy=H-s(105);
+  for(const px of positions){
+    const sx=W*px-sw/2;
+    const cols=Math.floor(sw/pw),rows=Math.floor(sh2/ph);
+    const pixels=[];
+    for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+      if(r<2&&(c<2||c>=cols-2)) continue;
+      if(r>=rows-2&&c>=Math.floor(cols*0.35)&&c<Math.floor(cols*0.65)) continue;
+      pixels.push({c,r,on:true});
+    }
+    shields.push({x:sx,y:sy,pw,ph,pixels});
+  }
+}
+
+function initGame(){
+  score=0; lives=5; level=1;
+  wrongFlash=0; okFlash=0; lvlFlash=0; lvlPause=0;
+  lastShot=0; lastAShot=0; aShotDelay=3500;
+  player={x:W/2, y:H-s(38), w:s(38), h:s(22)};
+  bullets=[]; aBullets=[]; particles=[];
+  makeQuestion();
+  buildAliens();
+  buildShields();
+}
+
+// ── Shoot ─────────────────────────────────────────────────
+function shoot(){
+  const now=Date.now(); if(now-lastShot<220) return; lastShot=now;
+  bullets.push({x:player.x, y:player.y-player.h/2-s(5), w:s(3), h:s(10)});
+  sndShoot();
+}
+function alienShoot(){
+  const a=aliens.filter(x=>x.alive);
+  if(!a.length) return;
+  const al=a[rnd(0,a.length-1)];
+  aBullets.push({x:al.x, y:al.y+al.h/2, w:s(3), h:s(10)});
+}
+
+// ── Shield hit ────────────────────────────────────────────
+function shieldHit(bx,by,bw,bh){
+  for(const sh of shields){
+    const maxC=sh.pixels.reduce((m,p)=>Math.max(m,p.c),0);
+    const maxR=sh.pixels.reduce((m,p)=>Math.max(m,p.r),0);
+    const right=sh.x+(maxC+1)*sh.pw, bottom=sh.y+(maxR+1)*sh.ph;
+    if(bx+bw<sh.x||bx>right||by+bh<sh.y||by>bottom) continue;
+    for(const p of sh.pixels){
+      if(!p.on) continue;
+      const px=sh.x+p.c*sh.pw,py=sh.y+p.r*sh.ph;
+      if(bx<px+sh.pw&&bx+bw>px&&by<py+sh.ph&&by+bh>py){
+        p.on=false;
+        sh.pixels.filter(q=>q.on&&Math.abs(q.c-p.c)<=1&&Math.abs(q.r-p.r)<=1)
+          .forEach(q=>{if(Math.random()<0.45) q.on=false;});
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// ── Particles ─────────────────────────────────────────────
+function burst(x,y,col,n){
+  for(let i=0;i<(n||12);i++){
+    const a=Math.random()*Math.PI*2,sp=(1+Math.random()*4)*SC;
+    particles.push({x,y,vx:Math.cos(a)*sp,vy:Math.sin(a)*sp,
+      life:1,decay:0.028+Math.random()*0.04,r:(1.5+Math.random()*2.5)*SC,col});
+  }
+}
+
+// ── Update ────────────────────────────────────────────────
+function update(){
+  if(lvlPause>0){ lvlPause--; return; }
+
+  if(keys.left)  player.x=Math.max(player.w/2, player.x-s(5));
+  if(keys.right) player.x=Math.min(W-player.w/2, player.x+s(5));
+
+  bullets  = bullets.filter(b=>{b.y-=s(11);   return b.y>-s(12);});
+  aBullets = aBullets.filter(b=>{b.y+=s(2.0)+level*SC*0.15; return b.y<H+s(12);});
+
+  const alive=aliens.filter(a=>a.alive);
+  if(!alive.length){ nextLevel(); return; }
+
+  let wall=false;
+  for(const a of alive){
+    a.x+=aDir*aSpeed;
+    if(a.x>W-a.w/2-s(4)||a.x<a.w/2+s(4)){wall=true;break;}
+  }
+  if(wall){ aDir*=-1; for(const a of aliens) a.y+=s(2); }
+  aliens.forEach(a=>{if(a.flash>0) a.flash--;});
+
+  const now=Date.now();
+  if(now-lastAShot>aShotDelay){
+    alienShoot(); lastAShot=now;
+    aShotDelay=Math.max(1200,3500-level*150+rnd(-300,300));
+  }
+
+  // Player bullets
+  for(let i=bullets.length-1;i>=0;i--){
+    const b=bullets[i];
+    if(shieldHit(b.x-b.w/2,b.y-b.h/2,b.w,b.h)){bullets.splice(i,1);continue;}
+    let hit=false;
+    for(const a of alive){
+      if(Math.abs(b.x-a.x)<a.w/2+s(2)&&Math.abs(b.y-a.y)<a.h/2+s(2)){
+        if(a.num===correctAns){
+          a.alive=false;
+          burst(a.x,a.y,'#0ff',16); burst(a.x,a.y,'#ff0',8);
+          score+=10*level; okFlash=38;
+          sndCorrect(); sndExplode();
+          makeQuestion();
+          const rem=aliens.filter(x=>x.alive);
+          const ns=alienNums(correctAns,rem.length);
+          // ns[0..7] contains correctAns in slot 0-7; assign in order
+          rem.forEach((al,i)=>al.num=ns[i]);
+          // Extra guarantee: find the bottom-most alive row (closest to player) and ensure correctAns is there
+          const maxY=Math.max(...rem.map(a=>a.y));
+          const frontRow=rem.filter(a=>Math.abs(a.y-maxY)<2);
+          if(!frontRow.some(a=>a.num===correctAns)){
+            const swapTarget=frontRow[rnd(0,frontRow.length-1)];
+            const wrongOne=rem.find(a=>a.num===correctAns&&Math.abs(a.y-maxY)>=2);
+            if(swapTarget&&wrongOne){
+              [swapTarget.num,wrongOne.num]=[wrongOne.num,swapTarget.num];
+            }
+          }
+        } else {
+          a.flash=28; lives--; wrongFlash=45; sndWrong();
+          if(lives<=0){endGame();return;}
+        }
+        hit=true; break;
+      }
+    }
+    if(hit) bullets.splice(i,1);
+  }
+
+  // Alien bullets
+  for(let i=aBullets.length-1;i>=0;i--){
+    const b=aBullets[i];
+    if(shieldHit(b.x-b.w/2,b.y-b.h/2,b.w,b.h)){aBullets.splice(i,1);continue;}
+    if(Math.abs(b.x-player.x)<player.w/2+s(2)&&Math.abs(b.y-player.y)<player.h/2+s(2)){
+      aBullets.splice(i,1); lives--; wrongFlash=45;
+      burst(player.x,player.y,'#f55',20); sndWrong();
+      if(lives<=0){endGame();return;}
+    }
+  }
+
+  for(const a of alive){
+    if(a.y+a.h/2>=player.y-player.h/2){endGame();return;}
+  }
+
+  particles=particles.filter(p=>{p.x+=p.vx;p.y+=p.vy;p.vy+=0.1*SC;p.life-=p.decay;return p.life>0;});
+  if(wrongFlash>0) wrongFlash--;
+  if(okFlash>0)    okFlash--;
+  if(lvlFlash>0)   lvlFlash--;
+}
+
+function nextLevel(){
+  level++; lvlFlash=90; lvlPause=90;
+  bullets=[]; aBullets=[];
+  makeQuestion(); buildAliens(); buildShields();
+  sndLevelUp();
+}
+
+function endGame(){
+  running=false;
+  ui.classList.remove('hide');
+  uiTitle.innerHTML = lives<=0 ? '💀 GAME OVER' : '🏆 כל הכבוד!';
+  uiSub.textContent = '';
+  scoreMsg.textContent = `ניקוד: ${score}  |  שלב: ${level}`;
+  startBtn.textContent = '▶ שחק שוב';
+}
+
+// ── Draw ──────────────────────────────────────────────────
+const PIXEL_ART = [
+  "...XX......XX..." +
+  "..XXXXXXXXXX...." +  // type 0 – classic
+  ".XXXXXXXXXXXX..." +
+  "XX.XX.XXXX.XX..." +
+  "XXXXXXXXXXXX...." +
+  "..X.X....X.X...." +
+  ".X..X....X..X..." +
+  "..XX...........",
+  "X....XX....X...." +  // type 1 – crab
+  ".X..XXXXXX..X..." +
+  ".XXXXXXXXXX....." +
+  "XX.XX.XX.XX.XX.." +
+  "XXXXXXXXXXXX...." +
+  "..XXXX..XXXX...." +
+  ".X...........X.." +
+  "X.............X.",
+  "...XXXXXX......." +  // type 2 – squid
+  ".XXXXXXXXXX....." +
+  "XXXXXXXXXXXX...." +
+  "XX.XX.XX.XX.XX.." +
+  ".XXXXXXXXXX....." +
+  "X.X.XXXXXX.X.X.." +
+  "X............X.." +
+  ".XX........XX..."
+];
+
+function drawAlien(a){
+  const art=PIXEL_ART[a.type];
+  const cols=16,rows=8;
+  const pw=a.w/cols, ph=a.h/rows;
+  const colMap=['#0ff','#f0f','#ff0'];
+  ctx.fillStyle = a.flash>0?(a.flash%4<2?'#fff':'#f44'):colMap[a.type];
+  for(let r=0;r<rows;r++) for(let c=0;c<cols;c++){
+    if(art[r*cols+c]==='X') ctx.fillRect(a.x-a.w/2+c*pw, a.y-a.h/2+r*ph, pw-0.5, ph-0.5);
+  }
+  const fs=Math.max(7,s(8.5));
+  ctx.font=`bold ${fs}px monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='top';
+  ctx.fillStyle=a.flash>0?'#f44':'#fff';
+  ctx.fillText(a.num, a.x, a.y+a.h/2+s(1));
+  ctx.shadowBlur=0;
+}
+
+function drawPlayer(){
+  const {x,y,w,h}=player;
+  ctx.fillStyle='#0f0';
+  ctx.fillRect(x-w/2,   y-h/2+s(7), w, h-s(7));   // body
+  ctx.fillRect(x-s(5),  y-h/2,      s(10), s(9));  // cockpit bump
+  ctx.fillStyle='#0ff';
+  ctx.fillRect(x-s(2),  y-h/2-s(7), s(4), s(8));   // cannon
+  ctx.fillStyle='#070';
+  ctx.fillRect(x-w/2,   y+h/2-s(6), s(9), s(6));   // left wing tip
+  ctx.fillRect(x+w/2-s(9),y+h/2-s(6),s(9),s(6));   // right wing tip
+}
+
+function drawBullets(){
+  ctx.shadowBlur=6;
+  ctx.fillStyle='#0ff'; ctx.shadowColor='#0ff';
+  bullets.forEach(b=>ctx.fillRect(b.x-b.w/2,b.y-b.h/2,b.w,b.h));
+  ctx.fillStyle='#f44'; ctx.shadowColor='#f44';
+  aBullets.forEach(b=>ctx.fillRect(b.x-b.w/2,b.y-b.h/2,b.w,b.h));
+  ctx.shadowBlur=0;
+}
+
+function drawShields(){
+  ctx.fillStyle='#0f0';
+  shields.forEach(sh=>sh.pixels.forEach(p=>{
+    if(p.on) ctx.fillRect(sh.x+p.c*sh.pw,sh.y+p.r*sh.ph,sh.pw-1,sh.ph-1);
+  }));
+}
+
+function drawParticles(){
+  particles.forEach(p=>{
+    ctx.save(); ctx.globalAlpha=p.life;
+    ctx.fillStyle=p.col;
+    ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+  });
+}
+
+function drawHUD(){
+  const fs=Math.max(8,s(10));
+  ctx.textBaseline='top'; ctx.shadowBlur=4;
+
+  ctx.font=`bold ${fs}px monospace`;
+  ctx.textAlign='left';  ctx.fillStyle='#ff0'; ctx.shadowColor='#ff0';
+  ctx.fillText(score, s(8), s(5));
+  ctx.textAlign='right'; ctx.fillStyle='#f55'; ctx.shadowColor='#f55';
+  ctx.fillText('♥'.repeat(lives), W-s(8), s(5));
+  ctx.textAlign='center'; ctx.fillStyle='#f0f'; ctx.shadowColor='#f0f';
+  ctx.fillText('LV '+level, W/2, s(5));
+  ctx.shadowBlur=0;
+
+  // Question / feedback
+  const qfs=Math.max(13,s(17));
+  ctx.font=`bold ${qfs}px monospace`;
+  ctx.textAlign='center'; ctx.textBaseline='middle';
+  if(okFlash>0){
+    ctx.fillStyle=`rgba(0,255,120,${okFlash/38})`; ctx.shadowColor='#0f0'; ctx.shadowBlur=16;
+    ctx.fillText('✓ נכון!', W/2, s(40));
+  } else if(wrongFlash>0){
+    ctx.fillStyle=`rgba(255,60,60,${wrongFlash/45})`; ctx.shadowColor='#f00'; ctx.shadowBlur=16;
+    ctx.fillText('✗ שגוי!', W/2, s(40));
+  } else {
+    ctx.fillStyle='#fff'; ctx.shadowColor='rgba(255,255,255,0.4)'; ctx.shadowBlur=6;
+    ctx.fillText(`${question.a} × ${question.b} = ?`, W/2, s(40));
+  }
+  ctx.shadowBlur=0;
+
+  if(lvlFlash>0){
+    ctx.save(); ctx.globalAlpha=Math.min(1,lvlFlash/30);
+    ctx.font=`bold ${Math.max(20,s(28))}px monospace`;
+    ctx.fillStyle='#ff0'; ctx.shadowColor='#ff0'; ctx.shadowBlur=20;
+    ctx.textAlign='center'; ctx.textBaseline='middle';
+    ctx.fillText(`★ שלב ${level} ★`, W/2, H/2);
+    ctx.shadowBlur=0; ctx.restore();
+  }
+
+  // divider lines
+  ctx.strokeStyle='rgba(0,255,0,0.2)'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(0,s(57)); ctx.lineTo(W,s(57)); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0,H-s(18)); ctx.lineTo(W,H-s(18)); ctx.stroke();
+}
+
+function drawBG(){
+  ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='rgba(255,255,255,0.55)';
+  for(let i=0;i<80;i++){
+    ctx.fillRect((i*137+11)%W,(i*241+7)%H,1,1);
+  }
+}
+
+// ── Main loop ─────────────────────────────────────────────
+let raf=null;
+function loop(){
+  if(!running) return;
+  update();
+  drawBG();
+  drawShields();
+  aliens.filter(a=>a.alive).forEach(drawAlien);
+  drawBullets();
+  drawPlayer();
+  drawParticles();
+  drawHUD();
+  raf=requestAnimationFrame(loop);
+}
+
+// ── Input ─────────────────────────────────────────────────
+document.addEventListener('keydown',e=>{
+  if(e.code==='ArrowLeft' ){keys.left=true; e.preventDefault();}
+  if(e.code==='ArrowRight'){keys.right=true;e.preventDefault();}
+  if(e.code==='Space'     ){shoot();        e.preventDefault();}
+});
+document.addEventListener('keyup',e=>{
+  if(e.code==='ArrowLeft' ) keys.left=false;
+  if(e.code==='ArrowRight') keys.right=false;
+});
+canvas.addEventListener('touchstart',e=>{
+  e.preventDefault(); ensureAC();
+  touchX=e.touches[0].clientX; shoot();
+},{passive:false});
+canvas.addEventListener('touchmove',e=>{
+  e.preventDefault();
+  const dx=e.touches[0].clientX-touchX;
+  player.x=Math.max(player.w/2,Math.min(W-player.w/2,player.x+dx*1.3));
+  touchX=e.touches[0].clientX;
+},{passive:false});
+
+// ── Start ─────────────────────────────────────────────────
+function startGame(){
+  ensureAC();
+  if(raf) cancelAnimationFrame(raf);
+  initGame();
+  running=true;
+  ui.classList.add('hide');
+  loop();
+}
+startBtn.addEventListener('click', startGame);
+</script>
+</body>
+</html>
