@@ -522,15 +522,22 @@ document.addEventListener('keyup',e=>{
   if(e.code==='ArrowLeft' ) keys.left=false;
   if(e.code==='ArrowRight') keys.right=false;
 });
+let touchMoved=false;
 canvas.addEventListener('touchstart',e=>{
   e.preventDefault(); ensureAC();
-  touchX=e.touches[0].clientX; shoot();
+  touchX=e.touches[0].clientX;
+  touchMoved=false;
 },{passive:false});
 canvas.addEventListener('touchmove',e=>{
   e.preventDefault();
   const dx=e.touches[0].clientX-touchX;
+  if(Math.abs(dx)>2) touchMoved=true;
   player.x=Math.max(player.w/2,Math.min(W-player.w/2,player.x+dx*1.3));
   touchX=e.touches[0].clientX;
+},{passive:false});
+canvas.addEventListener('touchend',e=>{
+  e.preventDefault();
+  if(!touchMoved) shoot();
 },{passive:false});
 
 // ── Start ─────────────────────────────────────────────────
