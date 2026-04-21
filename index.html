@@ -159,14 +159,12 @@ function makeQuestion(){
   question={a,b}; correctAns=a*b;
 }
 function alienNums(correct,count){
-  // Build filler numbers (no correct answer yet)
   const set=new Set();
   const cands=[correct-1,correct+1,correct+2,correct-2,correct+3,correct-3,
     correct*2,Math.ceil(correct*1.5),correct+7,correct-7,correct+5,correct+10,correct-5,correct+4];
   for(const n of cands){ if(n>1&&n!==correct) set.add(n); if(set.size>=count-1) break; }
   while(set.size<count-1){ const n=rnd(2,100); if(n!==correct) set.add(n); }
   const others=shuffle([...set]).slice(0,count-1);
-  // Always insert correct answer in LAST row (closest to player)
   const COLS=8;
   const lastRowStart=Math.max(0, count-1-COLS+1);
   const slot=rnd(lastRowStart, count-1);
@@ -190,7 +188,8 @@ function buildAliens(){
       alive:true, type:r%3, num:nums[idx++], flash:0});
   }
   aDir=1;
-  aSpeed=s(0.3+level*0.1);
+  // FIX: use raw multiplication instead of s() to avoid Math.round zeroing out small values on mobile
+  aSpeed=(0.3+level*0.1)*SC;
 }
 
 function buildShields(){
@@ -307,9 +306,7 @@ function update(){
           makeQuestion();
           const rem=aliens.filter(x=>x.alive);
           const ns=alienNums(correctAns,rem.length);
-          // ns[0..7] contains correctAns in slot 0-7; assign in order
           rem.forEach((al,i)=>al.num=ns[i]);
-          // Extra guarantee: find the bottom-most alive row (closest to player) and ensure correctAns is there
           const maxY=Math.max(...rem.map(a=>a.y));
           const frontRow=rem.filter(a=>Math.abs(a.y-maxY)<2);
           if(!frontRow.some(a=>a.num===correctAns)){
@@ -369,14 +366,14 @@ function endGame(){
 // ── Draw ──────────────────────────────────────────────────
 const PIXEL_ART = [
   "...XX......XX..." +
-  "..XXXXXXXXXX...." +  // type 0 – classic
+  "..XXXXXXXXXX...." +
   ".XXXXXXXXXXXX..." +
   "XX.XX.XXXX.XX..." +
   "XXXXXXXXXXXX...." +
   "..X.X....X.X...." +
   ".X..X....X..X..." +
   "..XX...........",
-  "X....XX....X...." +  // type 1 – crab
+  "X....XX....X...." +
   ".X..XXXXXX..X..." +
   ".XXXXXXXXXX....." +
   "XX.XX.XX.XX.XX.." +
@@ -384,7 +381,7 @@ const PIXEL_ART = [
   "..XXXX..XXXX...." +
   ".X...........X.." +
   "X.............X.",
-  "...XXXXXX......." +  // type 2 – squid
+  "...XXXXXX......." +
   ".XXXXXXXXXX....." +
   "XXXXXXXXXXXX...." +
   "XX.XX.XX.XX.XX.." +
@@ -414,13 +411,13 @@ function drawAlien(a){
 function drawPlayer(){
   const {x,y,w,h}=player;
   ctx.fillStyle='#0f0';
-  ctx.fillRect(x-w/2,   y-h/2+s(7), w, h-s(7));   // body
-  ctx.fillRect(x-s(5),  y-h/2,      s(10), s(9));  // cockpit bump
+  ctx.fillRect(x-w/2,   y-h/2+s(7), w, h-s(7));
+  ctx.fillRect(x-s(5),  y-h/2,      s(10), s(9));
   ctx.fillStyle='#0ff';
-  ctx.fillRect(x-s(2),  y-h/2-s(7), s(4), s(8));   // cannon
+  ctx.fillRect(x-s(2),  y-h/2-s(7), s(4), s(8));
   ctx.fillStyle='#070';
-  ctx.fillRect(x-w/2,   y+h/2-s(6), s(9), s(6));   // left wing tip
-  ctx.fillRect(x+w/2-s(9),y+h/2-s(6),s(9),s(6));   // right wing tip
+  ctx.fillRect(x-w/2,   y+h/2-s(6), s(9), s(6));
+  ctx.fillRect(x+w/2-s(9),y+h/2-s(6),s(9),s(6));
 }
 
 function drawBullets(){
@@ -461,7 +458,6 @@ function drawHUD(){
   ctx.fillText('LV '+level, W/2, s(5));
   ctx.shadowBlur=0;
 
-  // Question / feedback
   const qfs=Math.max(13,s(17));
   ctx.font=`bold ${qfs}px monospace`;
   ctx.textAlign='center'; ctx.textBaseline='middle';
@@ -473,7 +469,9 @@ function drawHUD(){
     ctx.fillText('✗ שגוי!', W/2, s(40));
   } else {
     ctx.fillStyle='#fff'; ctx.shadowColor='rgba(255,255,255,0.4)'; ctx.shadowBlur=6;
+    ctx.direction='ltr';
     ctx.fillText(`${question.a} × ${question.b} = ?`, W/2, s(40));
+    ctx.direction='rtl';
   }
   ctx.shadowBlur=0;
 
@@ -486,7 +484,6 @@ function drawHUD(){
     ctx.shadowBlur=0; ctx.restore();
   }
 
-  // divider lines
   ctx.strokeStyle='rgba(0,255,0,0.2)'; ctx.lineWidth=1;
   ctx.beginPath(); ctx.moveTo(0,s(57)); ctx.lineTo(W,s(57)); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(0,H-s(18)); ctx.lineTo(W,H-s(18)); ctx.stroke();
